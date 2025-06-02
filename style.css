@@ -1,0 +1,41 @@
+body { margin: 0; font-family: sans-serif; overflow: hidden; }
+        svg { width: 100vw; height: 85vh; touch-action: none; background-color: #f9f9f9; }
+        textarea#debug {
+            width: 100vw;
+            height: 12vh;
+            font-family: monospace;
+            font-size: 16px;
+            resize: none;
+            padding: 4px;
+        }
+        #controls {
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            z-index: 10;
+            font-size: 18px;
+        }
+        #contextMenu {
+            position: absolute;
+            background: #eee;
+            border: 2px solid #888;
+            display: none;
+            z-index: 100;
+            font-size: 18px;
+        }
+        #contextMenu button {
+            display: block;
+            width: 180px;
+            padding: 8px;
+            border: none;
+            background: none;
+            text-align: left;
+        }
+        #contextMenu button:hover {
+            background: #ccc;
+        }
+        button, input[type="file"] {
+            font-size: 16px;
+            padding: 6px;
+            margin-right: 5px;
+        }
