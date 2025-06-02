@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Mind Map - Mobile Friendly</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <style>
+        body { margin: 0; font-family: sans-serif; overflow: hidden; }
+        svg { width: 100vw; height: 85vh; touch-action: none; background-color: #f9f9f9; }
+        textarea#debug {
+            width: 100vw;
+            height: 12vh;
+            font-family: monospace;
+            font-size: 16px;
+            resize: none;
+            padding: 4px;
+        }
+        #controls {
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            z-index: 10;
+            font-size: 18px;
+        }
+        #contextMenu {
+            position: absolute;
+            background: #eee;
+            border: 2px solid #888;
+            display: none;
+            z-index: 100;
+            font-size: 18px;
+        }
+        #contextMenu button {
+            display: block;
+            width: 180px;
+            padding: 8px;
+            border: none;
+            background: none;
+            text-align: left;
+        }
+        #contextMenu button:hover {
+            background: #ccc;
+        }
+        button, input[type="file"] {
+            font-size: 16px;
+            padding: 6px;
+            margin-right: 5px;
+        }
+    </style>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+
+
+
+
+<body>
+    <div id="controls">
+        <input type="file" id="fileInput" accept=".opml" />
+        <button id="saveButton">Save OPML</button>
+        <label>Node Scale:
+            <input type="range" id="scaleSlider" min="0.1" max="2" step="0.1" value="1" style="width: 100%;">
+        </label>
+        <label>Stroke Width:
+            <input type="range" id="strokeSlider" min="1" max="3" step="0.1" value="1" style="width: 100%;">
+        </label>
+        <button id="refreshButton">Refresh Tree</button>
+    </div>
+    <svg id="tree"></svg>
+
+
+<div id="contextMenu" style="position: absolute; display: none; background-color: #ccc; border: 1px solid black; z-index: 10;">
+    <div id="addChild">Add child</div>
+    <div id="renameNode">Rename node</div>
+    <div id="deleteNode">Delete node</div>
+    <div id="cutNode">Cut</div>
+    <div id="pasteNode">Paste</div>
+    <div id="showChildrenOnly">Show children only</div>
+    <div id="showAllDescendants">Show all descendants</div>
+    <div id="hideAllDescendants">Hide all descendants</div>
+</div>
+
+<textarea id="debug" style="width: 100%; height: 100px; font-size: 0.5em;"></textarea>
+
+
+<script src="functions.js"></script>
+<script src="main.js"></script>
+
+</body>
+</html>
