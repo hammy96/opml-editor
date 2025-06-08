@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>HTML Splitter</title>
+  <style>
+    body { font-family: sans-serif; padding: 2rem; }
+    input[type="file"] { margin-bottom: 1rem; }
+    pre { background: #f4f4f4; padding: 1rem; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Split HTML File into index.html, style.css, and main.js</h1>
+  <input type="file" id="upload" accept=".html">
+  <p id="status"></p>
+
+  <script>
+    document.getElementById('upload').addEventListener('change', async function (event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const text = await file.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(text, "text/html");
+
+      // Extract and remove <style>
+      const styleTag = doc.querySelector('style');
+      const cssContent = styleTag ? styleTag.textContent : '';
+      if (styleTag) styleTag.remove();
+
+      // Insert link to external CSS
+      if (cssContent) {
+        const link = doc.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'style.css';
+        doc.head.appendChild(link);
+      }
+
+      // Extract and remove inline <script>
+      const scripts = Array.from(doc.querySelectorAll('script'))
+        .filter(script => !script.src);
+      const jsContent = scripts.map(s => s.textContent).join('\n\n');
+      scripts.forEach(s => s.remove());
+
+      // Add external script reference
+      if (jsContent) {
+        const script = document.createElement('script');
+        script.src = 'main.js';
+        doc.body.appendChild(script);
+      }
+
+      // Serialize modified HTML
+      const serializer = new XMLSerializer();
+      const newHtml = '<!DOCTYPE html>\n' + serializer.serializeToString(doc);
+
+      // Trigger downloads
+      function download(content, filename, type) {
+        const blob = new Blob([content], { type });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }
+
+      download(newHtml, 'index.html', 'text/html');
+      if (cssContent) download(cssContent, 'style.css', 'text/css');
+      if (jsContent) download(jsContent, 'main.js', 'application/javascript');
+
+      document.getElementById('status').textContent = 'Split complete. Files downloaded.';
+    });
+  </script>
+</body>
+</html>
