@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body { margin: 0; font-family: sans-serif; overflow: hidden; }
+    svg { width: 100vw; height: 85vh; background: #f9f9f9; }
+    
+    #controls, #contextMenu { position: absolute; z-index: 10; font-size: 16px; }
+    #contextMenu { display: none; background: #eee; border: 1px solid #888; }
+    #contextMenu div { padding: 8px; cursor: pointer; }
+    #contextMenu div:hover { background: #ccc; }
+    input, button { font-size: 14px; margin: 3px 0; width: 100%; }
+  </style>
+</head>
+<body>
+<textarea id="debug" rows=5 cols=50></textarea>
+
+<div id="controls">
+  <!-- Choose file button -->
+  <input type="file" id="fileInput" accept=".opml">
+<!--s-->
+  <button id="saveButton">Save OPML</button>
+<!--e-->
+</div>
+
+<svg id="tree"></svg>
+
+<div id="contextMenu">
+	<div id="addChild">Add child</div>
+<!--s-->
+  <div id="renameNode">Rename node</div>
+  <div id="deleteNode">Delete node</div>
+  <div id="showChildrenOnly">Show children only</div>
+  <div id="expandAllDescendants">Expand descendants</div>
+  <div id="collapseAllDescendants">Collapse descendants</div>
+  <div id="cutNode">Cut</div>
+  <div id="pasteNode">Paste</div>
+  <div id="saveBranch">Save branch</div>
+  <div id="importBranch">Import branch</div>
+<!--e-->
+</div>
+
+<!--s-->
+<input type="file" id="importBranchFile" accept=".opml" style="display: none;">
+<!--e-->
+
+
+<script>
+const debugArea = document.getElementById('debug');
+
+function dbg(...args) {
+  let text = args.map(a => (typeof a === 'object' ? JSON.stringify(a, null, 2) : a)).join(' ') + '\n';
+  if(!debugArea) {
+    alert('dbg: '+text);
+  } else {
+    debugArea.value += text;
+    debugArea.scrollTop = debugArea.scrollHeight;
+  }
+}
+
+dbg("OPML Editor 250618b");
+
+try {
+
+const svg = d3.select("svg"), g = svg.append("g");
+let selectedNode = null, treeRoot = null, nodeScale = 2, strokeWidth = 1;
+
+svg.call(d3.zoom().scaleExtent([0.02, 10]).on("zoom", e => g.attr("transform", e.transform)))
+   .call(d3.zoom().transform, d3.zoomIdentity.scale(0.8));
+
+
+// Choose file button
+document.getElementById("fileInput").onchange = e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const xml = new DOMParser().parseFromString(reader.result, "text/xml");
+    treeRoot = parseOPML(xml);
+    renderTree(treeRoot);
+  };
+  reader.readAsText(file);
+};
+
+
+["click", "touchstart"].forEach(e =>
+  window.addEventListener(e, evt =>
+    !document.getElementById("contextMenu").contains(evt.target) &&
+    (document.getElementById("contextMenu").style.display = "none")
+  )
+);
+
+// The only option to keep
+document.getElementById("addChild").onclick = () => {
+  if (!selectedNode) return;
+  const name = prompt("Child name:", "");
+  if (name) {
+    selectedNode.children = selectedNode.children || [];
+    selectedNode.children.push({ name, children: [], collapsed: false });
+    selectedNode.collapsed = false;
+    renderTree(treeRoot);
+  }
+  document.getElementById("contextMenu").style.display = "none";
+};
+
+
+//s
+
+document.getElementById("saveButton").addEventListener("click", () => {
+    if (treeRoot) {
+      const opmlString = generateOPML(treeRoot);
+      const blob = new Blob([opmlString], {type: "text/xml"});
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "mindmap.opml";
+      a.click();
+      dbg("OPML saved.");
+    } else {
+      alert("No tree to save.");
+    }
+  });
+
+
+document.getElementById("saveBranch").onclick = () => {
+  try {
+    if (!selectedNode) {
+      alert("No node selected to save.");
+      return;
+    }
+    const serializeNode = (node) => {
+      const el = document.createElement("outline");
+      el.setAttribute("text", node.name || "Untitled");
+      if (node.collapsed) el.setAttribute("collapsed", "true");
+      if (node.children) {
+        node.children.forEach(child => el.appendChild(serializeNode(child)));
+      }
+      return el;
+    };
+
+    const opml = document.implementation.createDocument("", "", null);
+    const opmlEl = opml.createElement("opml");
+    opmlEl.setAttribute("version", "2.0");
+    const head = opml.createElement("head");
+    const body = opml.createElement("body");
+    body.appendChild(serializeNode(selectedNode));
+    opmlEl.appendChild(head);
+    opmlEl.appendChild(body);
+    opml.appendChild(opmlEl);
+
+    const serializer = new XMLSerializer();
+    const xmlStr = serializer.serializeToString(opml);
+    const blob = new Blob([xmlStr], { type: "application/xml" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${(selectedNode.name || "branch").replace(/[\\/:*?"<>|]/g, "_")}.opml`;
+    link.click();
+  } catch (err) {
+    console.error("Error saving branch:", err);
+    alert("Failed to save the branch. Check console for details.");
+  }
+  document.getElementById("contextMenu").style.display = "none";
+};
+
+
+document.getElementById("importBranch").onclick = () => {
+  if (!selectedNode) {
+    alert("No node selected to import into.");
+    return;
+  }
+  document.getElementById("importBranchFile").click();
+};
+
+// Used by above
+document.getElementById("importBranchFile").onchange = (e) => {
+  const file = e.target.files[0];
+  if (!file || !selectedNode) {
+    alert("No file selected or no node selected.");
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const xml = new DOMParser().parseFromString(reader.result, "text/xml");
+      const outlines = xml.querySelector("body")?.children || [];
+      if (outlines.length === 0) {
+        alert("No valid outline elements found in the imported file.");
+        return;
+      }
+
+      const parseNode = n => ({
+        name: n.getAttribute("text") || "Untitled",
+        collapsed: n.getAttribute("collapsed") === "true",
+        children: Array.from(n.children).map(parseNode)
+      });
+
+      const importedNodes = Array.from(outlines).map(parseNode);
+      selectedNode.children = selectedNode.children || [];
+      selectedNode.children.push(...importedNodes);
+      selectedNode.collapsed = false;
+      renderTree(treeRoot);
+    } catch (err) {
+      console.error("Error importing branch:", err);
+      alert("Failed to import the branch. Check console for details.");
+    }
+  };
+
+  reader.onerror = () => {
+    console.error("File read error:", reader.error);
+    alert("Error reading the file.");
+  };
+
+  reader.readAsText(file);
+  document.getElementById("contextMenu").style.display = "none";
+};
+
+
+document.getElementById("renameNode").addEventListener("click", (event) => {
+  event.stopPropagation();
+  event.preventDefault();
+  if (selectedNode) {
+    const newName = prompt("Enter new name:", selectedNode.name);
+    if (newName) {
+      selectedNode.name = newName;
+      renderTree(treeRoot);
+    }
+  }
+  hideContextMenu();
+});
+
+
+document.getElementById("deleteNode").addEventListener("click", (event) => {
+  event.stopPropagation();
+  event.preventDefault();
+  if (selectedNode && selectedNode !== treeRoot) {
+    removeNode(treeRoot, selectedNode);
+    renderTree(treeRoot);
+  } else {
+    alert("Cannot delete the root node.");
+  }
+  hideContextMenu();
+});
+
+
+document.getElementById("showChildrenOnly").addEventListener("click", showChildrenOnly2);
+
+
+document.getElementById("expandAllDescendants").addEventListener("click", () => {
+  if (selectedNode) {
+    function expandAll(node) {
+      node.collapsed = false;
+      if (node.children) {
+        node.children.forEach(expandAll);
+      }
+    }
+    expandAll(selectedNode);
+    renderTree(treeRoot);
+    dbg(`All descendants of '${selectedNode.name}' are expanded.`);
+  }
+  hideContextMenu();
+});
+
+
+document.getElementById("collapseAllDescendants").addEventListener("click", () => {
+  if (selectedNode) {
+    function collapseAll(node) {
+      node.collapsed = true;
+      if (node.children) {
+        node.children.forEach(collapseAll);
+      }
+    }
+    collapseAll(selectedNode);
+    renderTree(treeRoot);
+    dbg(`All descendants of '${selectedNode.name}' are collapsed.`);
+  }
+  hideContextMenu();
+});
+
+
+document.getElementById("cutNode").addEventListener("click", (event) => {
+  event.stopPropagation();
+  event.preventDefault();
+  if (selectedNode && selectedNode !== treeRoot) {
+    pasteBuffer = deepCopyNode(selectedNode);
+    removeNode(treeRoot, selectedNode);
+    renderTree(treeRoot);
+    dbg(`Cut node '${pasteBuffer.name}'`);
+  } else {
+    alert("Cannot cut the root node.");
+  }
+  hideContextMenu();
+});
+
+
+document.getElementById("pasteNode").addEventListener("click", (event) => {
+  event.stopPropagation();
+  event.preventDefault();
+  if (!pasteBuffer) {
+    alert("Paste buffer is empty.");
+    hideContextMenu();
+    return;
+  }
+  if (selectedNode) {
+    if (!selectedNode.children) selectedNode.children = [];
+    selectedNode.children.push(deepCopyNode(pasteBuffer));
+    pasteBuffer = null;
+    dbg("Pasted node");
+
+    //Unhide children in DOM (not uncollapse)
+    selectedNode.collapsed = false;
+    renderTree(treeRoot);
+  }
+  hideContextMenu();
+});
+
+//e
+
+  
+// *** FUNCTIONS ***
+
+//s
+
+function collapseAll(node) {
+  if (node !== selectedNode && node.children) {
+    node.collapsed = true;
+    node.children.forEach(collapseAll);
+  } else if (node.children) {
+    node.collapsed = false;
+    node.children.forEach(collapseAll);
+  }
+}
+     
+  
+function showChildrenOnly2() {
+  if (selectedNode) {
+    dbg(`Showing children of '${selectedNode.name}'`);
+    collapseAll(selectedNode);
+    selectedNode.collapsed = false;
+    renderTree(treeRoot);
+  } else {
+    alert('No selected node!')
+  }
+  hideContextMenu();
+}
+
+  
+function removeNode(parent, target) {
+  if (!parent.children) return false;
+  const index = parent.children.indexOf(target);
+  if (index !== -1) {
+    parent.children.splice(index, 1);
+    return true;
+  }
+  for (const child of parent.children) {
+    if (removeNode(child, target)) return true;
+  }
+  return false;
+}
+
+
+function deepCopyNode(node) {
+  return {
+    name: node.name,
+    collapsed: node.collapsed,
+    children: node.children ? node.children.map(deepCopyNode) : []
+  };
+}
+
+//e
+
+
+function hideContextMenu() {
+    contextMenu.style.display = "none";
+    selectedNode = null;
+  }
+
+
+function parseOPML(xml) {
+  const parseNode = n => ({
+    name: n.getAttribute("text") || "Untitled",
+    collapsed: n.getAttribute("collapsed") === "true",
+    children: Array.from(n.children).map(parseNode)
+  });
+  const outlines = xml.querySelector("body")?.children || [];
+  return outlines.length === 1 ? parseNode(outlines[0]) : {
+    name: "Root", collapsed: false, children: Array.from(outlines).map(parseNode)
+  };
+}
+
+
+
+
+function renderTree(data) {
+  g.selectAll("*").remove();
+  const root = d3.hierarchy(data, d => d.collapsed ? null : d.children);
+  d3.tree().nodeSize([120 * nodeScale, 240 * nodeScale])(root);
+
+  g.selectAll(".link").data(root.links()).join("path")
+    .attr("fill", "none").attr("stroke", "#555")
+    .attr("stroke-width", 3 * nodeScale * strokeWidth)
+    .attr("d", d3.linkHorizontal().x(d => d.y).y(d => d.x));
+
+const nodes = g.selectAll(".node").data(root.descendants()).join("g")
+  .attr("transform", d => `translate(${d.y},${d.x}) scale(${nodeScale})`)
+  .on("click", (e, d) => { d.data.collapsed = !d.data.collapsed; renderTree(data); e.stopPropagation(); })
+  .on("mousedown touchstart", (e, d) => {
+    const t = setTimeout(() => { selectedNode = d.data; showContextMenu(e); }, 600);
+    d3.select(e.currentTarget).on("mouseup touchend", () => clearTimeout(t));
+  });
+
+// Append rect first with default size and position
+nodes.append("rect")
+  .attr("y", -20)
+  .attr("height", 40)
+  .attr("width", 100)   // initial default width
+  .attr("x", -50)       // initial default position
+  .attr("rx", 20)
+  .attr("fill", d => d.children ? "#66b" : "#999")
+  .attr("stroke", "#333")
+  .attr("stroke-width", 2);
+
+// Append text on top
+nodes.append("text")
+  .attr("dy", "0.35em")
+  .attr("text-anchor", "middle")
+  .style("fill", "white")
+  .style("font", `${16 * nodeScale}px sans-serif`)
+  .text(d => d.data.name);
+
+// Now update rect width and x based on text width
+nodes.each(function() {
+  const node = d3.select(this);
+  const textNode = node.select("text").node();
+  if (!textNode) return;
+  const textWidth = textNode.getBBox().width;
+  const padding = 20; // horizontal padding
+
+  node.select("rect")
+    .attr("width", textWidth + padding)
+    .attr("x", -(textWidth + padding) / 2);
+
+  node.select("text")
+    .attr("x", 0);
+});
+}
+
+
+
+
+function showContextMenu(e) {
+  e.preventDefault();
+  const cm = document.getElementById("contextMenu");
+  const pos = e.touches?.[0] || e;
+  cm.style.left = `${Math.min(pos.clientX, window.innerWidth - 180)}px`;
+  cm.style.top = `${Math.min(pos.clientY, window.innerHeight - 50)}px`;
+  cm.style.display = "block";
+}
+
+
+function generateOPML(rootNode) {
+  function buildOutline(node) {
+    const outline = document.createElement("outline");
+    outline.setAttribute("text", node.name);
+    outline.setAttribute("collapsed", node.collapsed ? "true" : "false");
+    if (node.children) {
+        node.children.forEach(child => outline.appendChild(buildOutline(child)));
+    }
+    return outline;
+  }
+  const opml = document.implementation.createDocument("", "", null);
+  const opmlElement = opml.createElement("opml");
+  opmlElement.setAttribute("version", "2.0");
+  const head = opml.createElement("head");
+  const title = opml.createElement("title");
+  title.textContent = "Mind Map Export";
+  head.appendChild(title);
+  const body = opml.createElement("body");
+  body.appendChild(buildOutline(rootNode));
+  opmlElement.appendChild(head);
+  opmlElement.appendChild(body);
+  opml.appendChild(opmlElement);
+  return new XMLSerializer().serializeToString(opml);
+}
+
+
+
+} catch(err) {
+  alert('err1: '+err.message);
+} finally {
+  dbg('Main thread has finished running');
+}
+
+
+
+//END
+
+</script>
+
+</body>
+</html>
