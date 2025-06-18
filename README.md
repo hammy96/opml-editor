@@ -1,3 +1,4 @@
-opml-editor.htm works ok
+opml editor 250618d.htm
 
-with tested "lean tags" in code to create "lean" version with core functionality to add and test new features using chatbot
+[x] Works ok
+[ ] Tested "lean tags"
