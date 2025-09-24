@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  body { margin: 0; font-family: sans-serif; overflow: hidden; }
+  svg { width: 100vw; height: 85vh; background: #f9f9f9; }
+  textarea { font-size: 0.5em; width: 100%; }
+
+  #controls, #contextMenu { position: absolute; z-index: 10; font-size: 16px; }
+  #contextMenu { display: none; background: #eee; border: 1px solid #888; }
+  #contextMenu div { padding: 8px; cursor: pointer; }
+  #contextMenu div:hover { background: #ccc; }
+  input, button { font-size: 14px; margin: 3px 0; }
+</style>
+</head>
+<body>
+
+<div id="controls">
+  <textarea id="debug" rows=3 cols=50></textarea>
+  <input type="file" id="fileInput" accept=".opml">
+  <button id="saveButton">Save</button>
+  <button onclick="goFullScreen()">FS</button>
+  <button onclick="toggleDivElements('controls')">GUI</button>
+</div>
+
+<svg id="tree"></svg>
+
+<div id="contextMenu">
+  <div id="addChild">Add child</div>
+  <div id="renameNode">Rename node</div>
+  <div id="deleteNode">Delete node</div>
+  <div id="showChildrenOnly">Show children only</div>
+  <div id="expandAllDescendants">Expand descendants</div>
+  <div id="collapseAllDescendants">Collapse descendants</div>
+  <div id="cutNode">Cut</div>
+  <div id="pasteNode">Paste</div>
+  <div id="saveBranch">Save branch</div>
+  <div id="importBranch">Import branch</div>
+</div>
+
+<input type="file" id="importBranchFile" accept=".opml" style="display: none;">
+
+<script>
+const debugArea = document.getElementById('debug');
+function dbg(...args) {
+  let text = args.map(a => (typeof a === 'object' ? JSON.stringify(a, null, 2) : a)).join(' ') + '\n';
+  if(!debugArea) { alert('dbg: '+text); }
+  else { debugArea.value += text; debugArea.scrollTop = debugArea.scrollHeight; }
+}
+
+dbg("OPML Editor, mouse version, 250922a");
+
+try {
+  const svg = d3.select("svg"), g = svg.append("g");
+  let selectedNode = null, treeRoot = null, nodeScale = 2, strokeWidth = 1;
+  let pasteBuffer = null;
+
+  svg.call(d3.zoom().scaleExtent([0.02, 10]).on("zoom", e => g.attr("transform", e.transform)))
+     .call(d3.zoom().transform, d3.zoomIdentity.scale(0.8));
+
+  // File load
+  document.getElementById("fileInput").onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const xml = new DOMParser().parseFromString(reader.result, "text/xml");
+      treeRoot = parseOPML(xml);
+      renderTree(treeRoot);
+      dbg("Tree loaded successfully");
+    };
+    reader.readAsText(file);
+  };
+
+  // Hide context menu on click outside
+  window.addEventListener("click", evt => {
+    if (!document.getElementById("contextMenu").contains(evt.target))
+      document.getElementById("contextMenu").style.display = "none";
+  });
+
+  // Context menu actions
+  document.getElementById("addChild").onclick = () => {
+    if (!selectedNode) return;
+    while(true) {
+      const name = prompt("New child (blank=end):", "");
+      if(!name) break;
+      selectedNode.children = selectedNode.children || [];
+      selectedNode.children.push({ name, children: [], collapsed: false });
+      selectedNode.collapsed = false;
+      renderTree(treeRoot);
+    }
+    hideContextMenu();
+  };
+
+  document.getElementById("renameNode").addEventListener("click", (event) => {
+    event.stopPropagation(); event.preventDefault();
+    if (selectedNode) {
+      const newName = prompt("Enter new name:", selectedNode.name);
+      if (newName) { selectedNode.name = newName; renderTree(treeRoot); }
+    }
+    hideContextMenu();
+  });
+
+  document.getElementById("deleteNode").addEventListener("click", (event) => {
+    event.stopPropagation(); event.preventDefault();
+    if (selectedNode && selectedNode !== treeRoot) {
+      removeNode(treeRoot, selectedNode);
+      renderTree(treeRoot);
+    } else { alert("Cannot delete the root node."); }
+    hideContextMenu();
+  });
+
+  document.getElementById("showChildrenOnly").addEventListener("click", showChildrenOnly2);
+  document.getElementById("expandAllDescendants").addEventListener("click", () => {
+    if (selectedNode) {
+      function expandAll(node) {
+        node.collapsed = false;
+        if (node.children) node.children.forEach(expandAll);
+      }
+      expandAll(selectedNode);
+      renderTree(treeRoot);
+      dbg(`All descendants of '${selectedNode.name}' are expanded.`);
+    }
+    hideContextMenu();
+  });
+
+  document.getElementById("collapseAllDescendants").addEventListener("click", () => {
+    if (selectedNode) {
+      function collapseAll(node) {
+        node.collapsed = true;
+        if (node.children) node.children.forEach(collapseAll);
+      }
+      collapseAll(selectedNode);
+      renderTree(treeRoot);
+      dbg(`All descendants of '${selectedNode.name}' are collapsed.`);
+    }
+    hideContextMenu();
+  });
+
+  document.getElementById("cutNode").addEventListener("click", (event) => {
+    event.stopPropagation(); event.preventDefault();
+    if (selectedNode && selectedNode !== treeRoot) {
+      pasteBuffer = deepCopyNode(selectedNode);
+      removeNode(treeRoot, selectedNode);
+      renderTree(treeRoot);
+      dbg(`Cut node '${pasteBuffer.name}'`);
+    } else { alert("Cannot cut the root node."); }
+    hideContextMenu();
+  });
+
+  document.getElementById("pasteNode").addEventListener("click", (event) => {
+    event.stopPropagation(); event.preventDefault();
+    if (!pasteBuffer) { alert("Paste buffer is empty."); hideContextMenu(); return; }
+    if (selectedNode) {
+      if (!selectedNode.children) selectedNode.children = [];
+      selectedNode.children.push(deepCopyNode(pasteBuffer));
+      pasteBuffer = null;
+      dbg("Pasted node");
+      selectedNode.collapsed = false;
+      renderTree(treeRoot);
+    }
+    hideContextMenu();
+  });
+
+  // --- FIXED Save button ---
+  document.getElementById("saveButton").addEventListener("click", () => {
+    if (!treeRoot) { alert("No tree to save. Load a file first."); return; }
+    try {
+      const opmlString = generateOPML(treeRoot);
+      const blob = new Blob([opmlString], { type: "text/xml" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = getFormattedDateTime() + "--opml.opml";
+      document.body.appendChild(a); // required for Firefox
+      a.click();
+      a.remove();
+      dbg("OPML saved.");
+    } catch (err) {
+      console.error("Error generating OPML:", err);
+      alert("Failed to save OPML. Check console for details.");
+    }
+  });
+
+  // --- Render Tree ---
+  function renderTree(data) {
+    g.selectAll("*").remove();
+    const root = d3.hierarchy(data, d => d.collapsed ? null : d.children);
+    d3.tree().nodeSize([120 * nodeScale, 240 * nodeScale])(root);
+
+    g.selectAll(".link").data(root.links()).join("path")
+      .attr("fill", "none").attr("stroke", "#555")
+      .attr("stroke-width", 3 * nodeScale * strokeWidth)
+      .attr("d", d3.linkHorizontal().x(d => d.y).y(d => d.x));
+
+    const nodes = g.selectAll(".node").data(root.descendants()).join("g")
+      .attr("transform", d => `translate(${d.y},${d.x}) scale(${nodeScale})`)
+      .on("click", (e, d) => { d.data.collapsed = !d.data.collapsed; renderTree(data); e.stopPropagation(); })
+      .on("contextmenu", (e, d) => { e.preventDefault(); selectedNode = d.data; showContextMenu(e); });
+
+    nodes.append("rect")
+      .attr("y", -20)
+      .attr("height", 40)
+      .attr("width", 100)
+      .attr("x", -50)
+      .attr("rx", 20)
+      .attr("fill", d => d.children ? "darkred" : "darkblue")
+      .attr("stroke", "#333")
+      .attr("stroke-width", 2);
+
+    nodes.append("text")
+      .attr("dy", "0.35em")
+      .attr("text-anchor", "middle")
+      .style("fill", "white")
+      .style("font", `${16 * nodeScale}px sans-serif`)
+      .text(d => d.data.name);
+
+    nodes.each(function() {
+      const node = d3.select(this);
+      const textNode = node.select("text").node();
+      if (!textNode) return;
+      const textWidth = textNode.getBBox().width;
+      const padding = 20;
+      node.select("rect").attr("width", textWidth + padding).attr("x", -(textWidth + padding)/2);
+      node.select("text").attr("x", 0);
+    });
+  }
+
+  function showContextMenu(e) {
+    e.preventDefault();
+    const cm = document.getElementById("contextMenu");
+    cm.style.left = `${Math.min(e.clientX, window.innerWidth - 180)}px`;
+    cm.style.top = `${Math.min(e.clientY, window.innerHeight - 50)}px`;
+    cm.style.display = "block";
+  }
+
+  function hideContextMenu() { 
+    document.getElementById("contextMenu").style.display = "none"; 
+    selectedNode = null; 
+  }
+
+  function parseOPML(xml) {
+    const parseNode = n => ({
+      name: n.getAttribute("text") || "Untitled",
+      collapsed: n.getAttribute("collapsed") === "true",
+      children: Array.from(n.children).map(parseNode)
+    });
+    const outlines = xml.querySelector("body")?.children || [];
+    return outlines.length === 1 ? parseNode(outlines[0]) : {
+      name: "Root", collapsed: false, children: Array.from(outlines).map(parseNode)
+    };
+  }
+
+  function removeNode(parent, target) {
+    if (!parent.children) return false;
+    const index = parent.children.indexOf(target);
+    if (index !== -1) { parent.children.splice(index, 1); return true; }
+    for (const child of parent.children) if (removeNode(child, target)) return true;
+    return false;
+  }
+
+  function deepCopyNode(node) {
+    return { name: node.name, collapsed: node.collapsed, children: node.children ? node.children.map(deepCopyNode) : [] };
+  }
+
+  function showChildrenOnly2() {
+    if (!selectedNode) { alert('No selected node!'); hideContextMenu(); return; }
+    collapseAll(selectedNode);
+    selectedNode.collapsed = false;
+    renderTree(treeRoot);
+    dbg(`Showing children of '${selectedNode.name}'`);
+    hideContextMenu();
+  }
+
+  function collapseAll(node) {
+    if (node.children) {
+      node.children.forEach(collapseAll);
+      node.collapsed = node !== selectedNode;
+    }
+  }
+
+  function generateOPML(rootNode) {
+    function buildOutline(node) {
+      const outline = document.createElement("outline");
+      outline.setAttribute("text", node.name);
+      outline.setAttribute("collapsed", node.collapsed ? "true" : "false");
+      if (node.children) node.children.forEach(child => outline.appendChild(buildOutline(child)));
+      return outline;
+    }
+    const opml = document.implementation.createDocument("", "", null);
+    const opmlElement = opml.createElement("opml");
+    opmlElement.setAttribute("version", "2.0");
+    const head = opml.createElement("head");
+    const title = opml.createElement("title"); title.textContent = "Mind Map Export"; head.appendChild(title);
+    const body = opml.createElement("body"); body.appendChild(buildOutline(rootNode));
+    opmlElement.appendChild(head); opmlElement.appendChild(body); opml.appendChild(opmlElement);
+    return new XMLSerializer().serializeToString(opml);
+  }
+
+  function getFormattedDateTime() {
+    const now = new Date();
+    const yy = String(now.getFullYear()).slice(-2);
+    const mm = String(now.getMonth()+1).padStart(2,'0');
+    const dd = String(now.getDate()).padStart(2,'0');
+    const hh = String(now.getHours()).padStart(2,'0');
+    const min = String(now.getMinutes()).padStart(2,'0');
+    return `${yy}${mm}${dd}-${hh}${min}`;
+  }
+
+  function goFullScreen() {
+    const el = document.documentElement;
+    if (el.requestFullscreen) el.requestFullscreen();
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    else if (el.msRequestFullscreen) el.msRequestFullscreen();
+  }
+
+  function toggleDivElements(divId) {
+    const div = document.getElementById(divId);
+    if (!div) return;
+    const children = div.children;
+    if (children.length === 0) return;
+    const shouldHide = getComputedStyle(children[0]).display !== 'none';
+    for (let i = 0; i < children.length-1; i++) children[i].style.display = shouldHide ? 'none' : '';
+  }
+
+} catch(err) {
+  alert('err1: '+err.message);
+} finally {
+  dbg('Main thread has finished running');
+}
+</script>
+</body>
+</html>
